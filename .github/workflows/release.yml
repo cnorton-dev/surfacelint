@@ -1,0 +1,74 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ''
+          - goos: linux
+            goarch: arm64
+            ext: ''
+          - goos: windows
+            goarch: amd64
+            ext: '.exe'
+          - goos: darwin
+            goarch: amd64
+            ext: ''
+          - goos: darwin
+            goarch: arm64
+            ext: ''
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p package
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "package/surfacelint${{ matrix.ext }}" ./cmd/surfacelint
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            (cd package && zip "../surfacelint-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.zip" "surfacelint${{ matrix.ext }}")
+          else
+            tar -C package -czf "surfacelint-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" "surfacelint${{ matrix.ext }}"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: surfacelint-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            surfacelint-*.tar.gz
+            surfacelint-*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum surfacelint-* > checksums.txt
+      - uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: dist/*
