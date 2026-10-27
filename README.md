@@ -2,143 +2,109 @@
 
 **Lint your public security surface from one local binary.**
 
-SurfaceLint is a local-first, open-source security posture assessment CLI for small businesses, startups, nonprofits, developers, and administrators who want a fast view of common public-facing security controls.
+SurfaceLint is a local-first Go CLI that checks public HTTPS/TLS, HTTP security headers, and email DNS authentication. It summarizes findings in the terminal and a self-contained HTML report, with opt-in local history for trend analysis. There is no account, hosted backend, or telemetry.
 
-It runs on the user's computer, requires no SurfaceLint account or hosted service, and does not upload scan results.
+> **Status:** v0.2 development preview, not a penetration test or compliance audit. Checks and scoring may change before v1.0.
 
-> **Project status:** v0.1 development preview. The scoring model and checks will evolve before v1.0.
+## Checks
 
-## What v0.1 checks
+- Validated HTTPS/TLS connection and certificate expiration
+- TLS 1.0/1.1 exposure and TLS 1.2/1.3 support
+- HTTP-to-HTTPS redirection
+- HSTS, CSP, X-Content-Type-Options, frame protection, Referrer-Policy, Permissions-Policy
+- SPF and DMARC policy
 
-- Validated HTTPS/TLS connectivity
-- Certificate expiration
-- TLS 1.0 and 1.1 exposure
-- TLS 1.2 / 1.3 support
-- HTTP to HTTPS redirection
-- HSTS
-- Content-Security-Policy
-- X-Content-Type-Options
-- Clickjacking protection
-- Referrer-Policy
-- Permissions-Policy
-- SPF
-- DMARC policy
+## Install from source
 
-## Quick start
-
-Requires Go 1.27+ when building from source.
+Requires Go 1.27+ (per `go.mod`).
 
 ```bash
 git clone https://github.com/cnorton-dev/surfacelint.git
 cd surfacelint
-go run ./cmd/surfacelint scan example.com
-```
-
-Or build a local binary:
-
-```bash
 go build -o surfacelint ./cmd/surfacelint
-./surfacelint scan example.com
+./surfacelint version
 ```
 
-Windows PowerShell:
-
-```powershell
-go build -o surfacelint.exe ./cmd/surfacelint
-.\surfacelint.exe scan example.com
-```
-
-By default SurfaceLint writes an HTML report to `./reports/`.
+## Usage
 
 ```bash
-surfacelint scan example.com --report ./example-security-report.html
-surfacelint scan example.com --no-report
+# Default: text output and local HTML report under reports/
+./surfacelint scan example.com
+
+# Opt-in to local history, compare scans over time
+./surfacelint scan --save example.com
+./surfacelint scan --save example.com
+./surfacelint history example.com
+./surfacelint compare example.com
+
+# Machine-readable JSON, with no HTML report by default
+./surfacelint scan --format json --no-report example.com
+./surfacelint compare --format json example.com
+
+# CI-friendly exit status
+./surfacelint scan --format json --fail-on fail example.com > scan.json
+
+# Custom report, scan timeout, or history directory
+./surfacelint scan --timeout 20s --report ./scan.html --save --data-dir ./local-history example.com
 ```
 
-## Example output
+**Exit codes:** `0` for a completed scan below the specified threshold; `1` for a runtime/scan-command error; `2` for missing or unknown top-level commands; `3` when `--fail-on warn` or `--fail-on fail` finds a matching status. Without `--fail-on`, security findings do not cause a nonzero exit status.
 
-```text
-SurfaceLint Security Assessment
-Target: example.com
+**Important:** Scan flags must appear before the domain, for example `scan --save example.com`.
 
-TLS
----
-[PASS] Validated TLS connection         Negotiated TLS 1.3 ...
-[PASS] Legacy TLS protocols disabled    TLS 1.0 and TLS 1.1 were not accepted.
+### Opt-in local history
 
-HTTP
-----
-[PASS] HTTP redirects to HTTPS          HTTP 301 redirects to https://example.com/.
-[WARN] Content Security Policy          Content-Security-Policy header was not present.
+`--save` appends JSON Lines records to a per-hostname file under your OS user config directory (`surfacelint/history/`) or an explicit `--data-dir`. The directory and files use restrictive Unix permissions where supported. `history` shows recent scores, while `compare` compares the two most recent scans by finding ID, reporting new, removed, improved, regressed, and changed findings.
 
-Email/DNS
----------
-[PASS] SPF record                       SPF: v=spf1 ...
-[WARN] DMARC policy                     DMARC is present but uses p=none.
+History uses standard-library JSONL rather than SQLite so the CLI can remain a single dependency-free Go binary. In case the local history needs migration or SQLite later, the persistence implementation is isolated under `internal/history`.
 
-Security Score: 84/100
+### CI automation
+
+This Bash example fails the job only when a finding has `fail` status and preserves the JSON evidence as an artifact:
+
+```bash
+set +e
+./surfacelint scan --format json --no-report --fail-on fail example.com > scan.json
+code=$?
+set -e
+if [ "$code" -eq 3 ]; then
+  echo 'Security findings exceeded policy threshold' >&2
+  exit 3
+fi
+exit "$code"
 ```
 
-## Philosophy
+## Security and privacy
 
-SurfaceLint is intentionally local-first:
+- Only scan hosts you own or are authorized to assess.
+- SurfaceLint makes ordinary public DNS, HTTP, and TLS requests. It never attempts exploitation or authentication bypass.
+- Results are not uploaded by SurfaceLint. `--save` is optional.
+- Security findings require human review: missing headers or a failed connection do not prove exploitability.
+- Do not pass attacker-controlled URLs or domains to a scan agent with access to private networks. This preview does not implement DNS-rebinding-resistant egress filtering.
 
-- no account required
-- no hosted SurfaceLint backend
-- no telemetry in v0.1
-- no scan-result uploads
-- no database server required
-- reports are generated locally
+## Project layout
 
-The project focuses on understandable findings and actionable remediation rather than producing a large volume of scanner output.
+| Path | Responsibility |
+|---|---|
+| `cmd/surfacelint` | CLI commands and threshold policy |
+| `internal/checks` | Public TLS, HTTP, and DNS observations |
+| `internal/scanner` | Parallel scan coordination and scoring |
+| `internal/history` | Local append-only scan history |
+| `internal/drift` | Deterministic finding comparisons |
+| `internal/report` | Terminal, JSON and HTML output |
+| `internal/model` | Shared typed result model |
+| `internal/target` | Hostname normalization |
 
-## Safety and scope
+## Quality and releases
 
-SurfaceLint v0.1 uses lightweight public HTTPS, TLS, HTTP, and DNS checks. It does not exploit vulnerabilities, brute-force services, bypass authentication, or perform intrusive testing.
+```bash
+go test ./...
+go vet ./...
+go build ./cmd/surfacelint
+```
 
-Only scan systems you own or are authorized to assess.
+CI covers Linux, macOS, and Windows; release automation packages binaries on git tags. The integration test is disabled by default and can be enabled via `SURFACELINT_INTEGRATION=1` on a network-connected machine.
 
-## Roadmap
+See [architecture](docs/ARCHITECTURE.md), [scoring](docs/SCORING.md), [roadmap](docs/ROADMAP.md), [contributing](CONTRIBUTING.md), and [security](SECURITY.md).
 
-### v0.2
-- SQLite scan history
-- `surfacelint history <domain>`
-
-### v0.3
-- `surfacelint compare`
-- posture-change reporting
-
-### v0.4
-- cookie security checks
-- `security.txt`
-- CAA
-- DNSSEC detection
-- redirect-chain analysis
-
-### v0.5
-- JSON output
-- CI-friendly exit codes
-- configurable policies
-
-### v1.0
-- stable scoring model
-- signed cross-platform releases
-- polished documentation
-
-## Contributing
-
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Security
-
-Please report vulnerabilities according to [SECURITY.md](SECURITY.md).
-
-## License
-
-MIT License. See [LICENSE](LICENSE).
-
-## Architecture and design
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Scoring model](docs/SCORING.md)
-- [Roadmap](docs/ROADMAP.md)
+MIT licensed.

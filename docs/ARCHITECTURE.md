@@ -1,62 +1,36 @@
 # SurfaceLint Architecture
 
-SurfaceLint is intentionally local-first. It has no hosted control plane, account system, telemetry service, or required database server.
-
-## Data flow
+SurfaceLint is local-first, without hosted infrastructure, user accounts, telemetry or a database server.
 
 ```text
-User command
-    |
-    v
+CLI (scan/history/compare)
+  |       |       |
+  |       |       +----> History.Store.List ----> Drift.Compare ----> JSON/text
+  |       +------------> History.Store.List ----> Recent scores
+  v
 Target normalization
-    |
-    v
-Concurrent scan coordinator
-    |----------- TLS checks
-    |----------- HTTP/header checks
-    `----------- DNS/email-authentication checks
-                    |
-                    v
-              Findings model
-                    |
-                    v
-               Score engine
-                 /     \
-                v       v
-        Terminal output HTML report
+  |
+Concurrent Scan coordinator
+  |---- TLS handshake / certificate / protocol probes
+  |---- HTTP / header inspection
+  `---- DNS TXT / email authentication
+  |
+Findings (stable IDs, status, severity, evidence, recommendation)
+  |
+Deterministic score
+  |---- terminal / JSON / escaped local HTML
+  `---- optional History.Store.Append (per-domain JSONL files)
 ```
 
-## Packages
+`internal/checks` contains isolated network-facing checks, `internal/scanner` orchestrates them and applies the scoring model, `internal/model` contains cross-package types, `internal/report` handles output, `internal/history` stores results locally, and `internal/drift` classifies findings by ID across two saved snapshots.
 
-- `cmd/surfacelint`: CLI entry point and command-line options.
-- `internal/target`: target normalization and input validation.
-- `internal/checks`: network-facing posture checks.
-- `internal/model`: common result and finding types.
-- `internal/scanner`: concurrent orchestration and scoring.
-- `internal/report`: terminal and self-contained HTML reports.
+The implementation uses only the standard library. Scan history uses append-only JSONL, making records inspectable without specialized tooling and simplifying cross-platform builds. Each saved snapshot is independent; no database migration step is required yet.
 
-## Design constraints
+## Tradeoffs and security boundaries
 
-### Local-first
-
-Scan results stay on the local machine. SurfaceLint does not require a SurfaceLint-hosted API.
-
-### Minimal dependencies
-
-v0.1 uses only the Go standard library. This reduces supply-chain surface area and makes cross-platform static builds straightforward.
-
-### Non-invasive checks
-
-v0.1 performs ordinary TLS handshakes, HTTP requests, and DNS lookups. It does not brute-force services, exploit vulnerabilities, bypass authentication, or modify the target.
-
-### Explainable findings
-
-Every actionable finding carries evidence, severity, and remediation text. The report should tell a user what was observed and what to do next.
-
-### Deterministic scoring
-
-The score is calculated only from emitted findings. Identical findings produce the same score regardless of platform.
-
-## Future architecture
-
-v0.2 will add SQLite behind a storage interface for local scan history. The network scanner will remain usable without a persistent database so one-shot scans stay simple.
+- The checks are low impact but they make real outbound network requests. Use only against authorized targets.
+- Scan history is deliberately opt-in to avoid retaining security data unexpectedly.
+- Reports use `html/template` escaping. JSON output is suitable for machine processing.
+- An HTML report is the default for text scans, but JSON scans do not write it unless a path is explicitly requested; stdout therefore contains only JSON.
+- `--fail-on` is a user-selected status policy, not a claim that a score automatically means a system is secure.
+- Version 0.2 does not yet defend against DNS rebinding/private-address redirection and should not accept untrusted target submissions in a privileged or private-network deployment.
